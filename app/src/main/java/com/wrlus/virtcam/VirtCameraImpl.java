@@ -1,6 +1,5 @@
 package com.wrlus.virtcam;
 
-import com.wrlus.virtcam.hook.Camera2PreviewHooker;
 import com.wrlus.virtcam.hook.LegacyCameraHooker;
 import com.wrlus.virtcam.hook.Camera2Hooker;
 import com.wrlus.virtcam.utils.Config;
@@ -23,10 +22,6 @@ public class VirtCameraImpl implements IXposedHookLoadPackage {
 
         if (Config.enableCamera2Hook) {
             HookInterface hooker = new Camera2Hooker(baseFile);
-            hooker.onHookPackage(loadPackageParam);
-        }
-        if (Config.enableCamera2PreviewHook) {
-            HookInterface hooker = new Camera2PreviewHooker();
             hooker.onHookPackage(loadPackageParam);
         }
         if (Config.enableLegacyCameraHook) {

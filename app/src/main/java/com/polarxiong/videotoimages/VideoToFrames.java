@@ -35,9 +35,9 @@ public class VideoToFrames implements Runnable {
     private Callback callback;
 
     public interface Callback {
-        void onFinishDecode();
-
-        void onDecodeFrameToFile(int index, String fileName);
+        default void onFinishDecode() {}
+        default void onDecodeFrameToFile(int index, String fileName) {}
+        default void onDecodeFrameToMemory(int index, Image image) {}
     }
 
     public void setCallback(Callback callback) {
@@ -51,6 +51,10 @@ public class VideoToFrames implements Runnable {
             Log.d(TAG, "mkdir " + dir + ": " + theDir.mkdirs());
         }
         outputDir = theDir.getAbsolutePath() + "/";
+    }
+
+    public void setSaveFrames(OutputImageFormat imageFormat) {
+        this.imageFormat = imageFormat;
     }
 
     public void stopDecode() {
@@ -84,7 +88,6 @@ public class VideoToFrames implements Runnable {
             MediaFormat mediaFormat = extractor.getTrackFormat(trackIndex);
             String mime = mediaFormat.getString(MediaFormat.KEY_MIME);
             decoder = MediaCodec.createDecoderByType(mime);
-            showSupportedColorFormat(decoder.getCodecInfo().getCapabilitiesForType(mime));
             int decodeColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;
             if (isColorFormatSupported(decodeColorFormat, decoder.getCodecInfo().getCapabilitiesForType(mime))) {
                 mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, decodeColorFormat);
@@ -107,14 +110,7 @@ public class VideoToFrames implements Runnable {
         }
     }
 
-    private void showSupportedColorFormat(MediaCodecInfo.CodecCapabilities caps) {
-        Log.i(TAG,"supported color format: ");
-        for (int c : caps.colorFormats) {
-            Log.i(TAG, c + "\t");
-        }
-    }
-
-    private boolean isColorFormatSupported(int colorFormat, MediaCodecInfo.CodecCapabilities caps) {
+    public boolean isColorFormatSupported(int colorFormat, MediaCodecInfo.CodecCapabilities caps) {
         for (int c : caps.colorFormats) {
             if (c == colorFormat) {
                 return true;
@@ -157,7 +153,7 @@ public class VideoToFrames implements Runnable {
                 if (doRender) {
                     frameCount++;
                     Image image = decoder.getOutputImage(outputBufferId);
-                    if (imageFormat != null) {
+                    if (image != null) {
                         String fileName = null;
                         switch (imageFormat) {
                             case I420:
@@ -177,10 +173,11 @@ public class VideoToFrames implements Runnable {
                                 break;
                         }
                         if (callback != null) {
+                            callback.onDecodeFrameToMemory(frameCount, image);
                             callback.onDecodeFrameToFile(frameCount, fileName);
                         }
+                        image.close();
                     }
-                    image.close();
                     decoder.releaseOutputBuffer(outputBufferId, true);
                 }
             }
@@ -190,7 +187,7 @@ public class VideoToFrames implements Runnable {
         }
     }
 
-    private static int selectTrack(MediaExtractor extractor) {
+    public static int selectTrack(MediaExtractor extractor) {
         int numTracks = extractor.getTrackCount();
         for (int i = 0; i < numTracks; i++) {
             MediaFormat format = extractor.getTrackFormat(i);

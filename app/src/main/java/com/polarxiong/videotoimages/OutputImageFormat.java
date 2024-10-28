@@ -8,7 +8,9 @@ import androidx.annotation.NonNull;
 public enum OutputImageFormat {
     I420("I420"),
     NV21("NV21"),
-    JPEG("JPEG");
+    JPEG("JPEG"),
+    RAW("RAW");
+
     private final String friendlyName;
 
     OutputImageFormat(String friendlyName) {

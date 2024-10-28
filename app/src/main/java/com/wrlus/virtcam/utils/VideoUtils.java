@@ -3,19 +3,44 @@ package com.wrlus.virtcam.utils;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
+import android.media.Image;
+import android.media.ImageWriter;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
 import android.media.MediaPlayer;
 import android.util.Log;
 import android.view.Surface;
 
+import androidx.annotation.NonNull;
+
+import com.polarxiong.videotoimages.OutputImageFormat;
+import com.polarxiong.videotoimages.VideoToFrames;
+
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Created by wrlu on 2024/3/13.
  */
 public class VideoUtils {
     private static final String TAG = "VideoUtils";
+    private static final ConcurrentLinkedQueue<String> decodedFrames =
+            new ConcurrentLinkedQueue<>();
+    public enum DecodeStatus {
+        NOT_START,
+        DECODING,
+        FINISHED,
+    }
+    private static DecodeStatus decodeToFileStatus = DecodeStatus.NOT_START;
 
     public static MediaPlayer playVideo(File videoFile, Surface surface) {
         MediaPlayer mediaPlayer = new MediaPlayer();
@@ -37,6 +62,98 @@ public class VideoUtils {
             Log.e(TAG, "playVideo - IOException", e);
         }
         return null;
+    }
+
+    public static MediaCodec decodeVideoToSurface(File videoFile, Surface surface) {
+        MediaExtractor extractor = new MediaExtractor();
+        try {
+            extractor.setDataSource(videoFile.toString());
+            int trackIndex = VideoToFrames.selectTrack(extractor);
+            extractor.selectTrack(trackIndex);
+            MediaFormat mediaFormat = extractor.getTrackFormat(trackIndex);
+            mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+            MediaCodec mediaCodec = MediaCodec
+                    .createDecoderByType(mediaFormat.getString(MediaFormat.KEY_MIME));
+            mediaCodec.setCallback(new MediaCodec.Callback() {
+                @Override
+                public void onInputBufferAvailable(@NonNull MediaCodec codec, int index) {
+                    ByteBuffer inputBuffer = codec.getInputBuffer(index);
+                    int sampleSize = extractor.readSampleData(inputBuffer, 0);
+                    if (sampleSize > 0) {
+                        long presentationTimeUs = extractor.getSampleTime();
+                        codec.queueInputBuffer(index, 0, sampleSize, presentationTimeUs, 0);
+                        extractor.advance();
+                    } else {
+                        codec.queueInputBuffer(index, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                    }
+                }
+
+                @Override
+                public void onOutputBufferAvailable(@NonNull MediaCodec codec, int index, @NonNull MediaCodec.BufferInfo info) {
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM)!= 0) {
+                        extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+                    }
+                    codec.releaseOutputBuffer(index, true);
+                }
+
+                @Override
+                public void onError(@NonNull MediaCodec codec, @NonNull MediaCodec.CodecException e) {
+
+                }
+
+                @Override
+                public void onOutputFormatChanged(@NonNull MediaCodec codec, @NonNull MediaFormat format) {
+
+                }
+            });
+            mediaCodec.configure(mediaFormat, surface, null, 0);
+            mediaCodec.start();
+            return mediaCodec;
+        } catch (IOException e) {
+            Log.e(TAG, "decodeVideoToSurface - IOException", e);
+        }
+        return null;
+    }
+
+    public static void decodeVideoAndSaveNV21(File videoFile, File outputDir) {
+        if (decodeToFileStatus == DecodeStatus.NOT_START) {
+            decodeToFileStatus = DecodeStatus.DECODING;
+            // Create decoded video frame saved path.
+            Log.w(TAG, "Create dir " + outputDir.getAbsolutePath() +
+                    " result: " + outputDir.mkdir());
+            // Use VideoToFrames to decode video, will run in a handler thread.
+            VideoToFrames videoToFrames = new VideoToFrames();
+            videoToFrames.setSaveFrames(outputDir.getAbsolutePath(),
+                    OutputImageFormat.NV21);
+            videoToFrames.setCallback(new VideoToFrames.Callback() {
+                @Override
+                public void onDecodeFrameToFile(int index, String fileName) {
+                    decodedFrames.add(fileName);
+                }
+
+                @Override
+                public void onFinishDecode() {
+                    decodeToFileStatus = DecodeStatus.FINISHED;
+                    Log.i(TAG, "onFinishDecode: finish decode video: " +
+                            videoFile.getAbsolutePath() + ", to path: " +
+                            outputDir.getAbsolutePath());
+                }
+            });
+            videoToFrames.decode(videoFile.getAbsolutePath());
+        }
+    }
+
+    public static byte[] getReplacedPreviewFrame() {
+        if (VideoUtils.getDecodeToFileStatus() == VideoUtils.DecodeStatus.FINISHED) {
+            String savedFrameFileName = VideoUtils.getDecodedFrames().poll();
+            // Looping play.
+            VideoUtils.getDecodedFrames().add(savedFrameFileName);
+            Log.w(TAG, "Serve replaced preview frame: " + savedFrameFileName);
+            return readFile(savedFrameFileName);
+        } else {
+            return null;
+        }
     }
 
     public static byte[] rotateNV21(byte[] yuv, int width, int height, int rotation) {
@@ -90,5 +207,32 @@ public class VideoUtils {
         } catch (IOException e) {
             Log.e(TAG, "savePreviewFrameImage - IOException", e);
         }
+    }
+
+
+    private static byte[] readFile(String filePath) {
+        Path path = Paths.get(filePath);
+        try {
+            int size = (int) Files.size(path);
+            byte[] data = new byte[size];
+            FileInputStream fis = new FileInputStream(filePath);
+            int readSize = fis.read(data);
+            if (readSize != size) {
+                Log.w(TAG, "readFile: readSize != size");
+            }
+            fis.close();
+            return data;
+        } catch (IOException e) {
+            Log.e(TAG, "readFile - IOException", e);
+        }
+        return null;
+    }
+
+    public static DecodeStatus getDecodeToFileStatus() {
+        return decodeToFileStatus;
+    }
+
+    public static ConcurrentLinkedQueue<String> getDecodedFrames() {
+        return decodedFrames;
     }
 }
